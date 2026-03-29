@@ -27,7 +27,7 @@ struct TableListColumnView: View {
                             .tag(table.name)
                     }
                 }
-                .navigationTitle("Tables")
+                .navigationTitle(session.displayName)
             }
         } else if !hasOpenDatabases {
             ContentUnavailableView(
