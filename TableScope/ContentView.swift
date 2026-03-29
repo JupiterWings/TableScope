@@ -52,7 +52,7 @@ struct ContentView: View {
                 Button {
                     appState.presentOpenPanel()
                 } label: {
-                    Label("Open Database…", systemImage: "folder")
+                    Label("Open Database…", systemImage: "externaldrive.fill.badge.plus")
                 }
             }
 

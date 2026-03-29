@@ -25,10 +25,23 @@ struct DatabaseSidebarView: View {
         } else {
             List(selection: selectedDatabaseID) {
                 ForEach(sessions) { session in
-                    DatabaseRowView(session: session) {
-                        onClose(session.id)
-                    }
-                    .tag(session.id)
+                    DatabaseRowView(session: session)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) {
+                                onClose(session.id)
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                        }
+                        .help("Swipe left to remove this database")
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                onClose(session.id)
+                            } label: {
+                                Label("Remove Database", systemImage: "trash")
+                            }
+                        }
+                        .tag(session.id)
                 }
             }
             .listStyle(.sidebar)
