@@ -6,23 +6,6 @@
 
 import Foundation
 
-nonisolated enum SecurityScopeKind: String, Hashable, Sendable, Codable {
-    case databaseFile
-    case containingFolder
-}
-
-nonisolated struct ActiveSecurityScope: Hashable, Sendable {
-    let url: URL
-    let kind: SecurityScopeKind
-    let startedAccess: Bool
-}
-
-nonisolated struct PendingDatabaseOpen: Hashable, Sendable {
-    let databaseURL: URL
-    let expectedFolderURL: URL
-    let fileScope: ActiveSecurityScope
-}
-
 nonisolated struct DatabaseSession: Identifiable, Hashable, Sendable {
     let id: UUID
     let url: URL
@@ -32,7 +15,6 @@ nonisolated struct DatabaseSession: Identifiable, Hashable, Sendable {
     var page: TablePage?
     var isLoadingPage: Bool
     var lastErrorMessage: String?
-    let activeAccessScopes: [ActiveSecurityScope]
 
     nonisolated var displayName: String {
         url.lastPathComponent

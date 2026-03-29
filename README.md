@@ -16,7 +16,7 @@ It uses a three-column layout:
 - Multiple databases open in one app session
 - Simple paging for large tables
 - Native file importer for opening databases
-- WAL-aware folder access flow for sandboxed macOS builds
+- Native file importer for opening databases
 
 ## Requirements
 
@@ -28,8 +28,6 @@ It uses a three-column layout:
 1. Launch the app in Xcode.
 2. Click `Open Database…`.
 3. Select a `.db` or other SQLite database file.
-
-If the database uses SQLite WAL sidecar files such as `my.db-wal` and `my.db-shm`, TableScope may ask for access to the containing folder. That allows the app to open live WAL-backed databases inside the macOS sandbox.
 
 ## Notes
 

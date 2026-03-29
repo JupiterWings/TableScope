@@ -10,24 +10,13 @@ import UniformTypeIdentifiers
 
 nonisolated enum ImporterMode: Sendable {
     case databaseFiles
-    case folderForPendingDatabase
 
     var allowedContentTypes: [UTType] {
-        switch self {
-        case .databaseFiles:
-            return [.data]
-        case .folderForPendingDatabase:
-            return [.folder]
-        }
+        [.data]
     }
 
     var allowsMultipleSelection: Bool {
-        switch self {
-        case .databaseFiles:
-            return true
-        case .folderForPendingDatabase:
-            return false
-        }
+        true
     }
 }
 
@@ -35,9 +24,7 @@ nonisolated enum ImporterMode: Sendable {
 @Observable
 final class AppState {
     private enum AlertDismissAction {
-        case presentPendingFolderPicker
         case resumeQueuedOpens
-        case discardPendingAndResumeQueuedOpens
     }
 
     let pageSize = 100
@@ -46,23 +33,14 @@ final class AppState {
     var selectedDatabaseID: UUID?
     var isPresentingImporter = false
     var importerMode: ImporterMode = .databaseFiles
-    var pendingDatabaseOpen: PendingDatabaseOpen?
     var alert: AppAlert?
 
     private let browser: SQLiteBrowser
-    private let bookmarkStore: SecurityScopedBookmarkStore
-    private let fileManager: FileManager
     private var alertDismissAction: AlertDismissAction?
     private var queuedDatabaseURLs: [URL] = []
 
-    init(
-        browser: SQLiteBrowser = SQLiteBrowser(),
-        bookmarkStore: SecurityScopedBookmarkStore = SecurityScopedBookmarkStore(),
-        fileManager: FileManager = .default
-    ) {
+    init(browser: SQLiteBrowser = SQLiteBrowser()) {
         self.browser = browser
-        self.bookmarkStore = bookmarkStore
-        self.fileManager = fileManager
     }
 
     var selectedSession: DatabaseSession? {
@@ -110,83 +88,22 @@ final class AppState {
     }
 
     func handleImporterResult(result: Result<[URL], Error>) async {
-        let currentImporterMode = importerMode
         isPresentingImporter = false
-        importerMode = .databaseFiles
 
         do {
-            let urls = try result.get()
-
-            switch currentImporterMode {
-            case .databaseFiles:
-                queuedDatabaseURLs.append(contentsOf: urls)
-                await processQueuedDatabaseURLs()
-            case .folderForPendingDatabase:
-                guard let selectedFolderURL = urls.first else {
-                    presentAlert(
-                        title: "Folder Access Required",
-                        message: "This database uses SQLite WAL sidecar files. Select its folder or one of its parent folders to open it.",
-                        dismissAction: .discardPendingAndResumeQueuedOpens
-                    )
-                    return
-                }
-
-                await handleAuthorizedFolderSelection(selectedFolderURL)
-            }
+            queuedDatabaseURLs.append(contentsOf: try result.get())
+            await processQueuedDatabaseURLs()
         } catch {
-            switch currentImporterMode {
-            case .databaseFiles:
-                presentAlert(
-                    title: "Couldn’t Open Database",
-                    message: error.localizedDescription,
-                    dismissAction: queuedDatabaseURLs.isEmpty ? nil : .resumeQueuedOpens
-                )
-            case .folderForPendingDatabase:
-                presentAlert(
-                    title: "Folder Access Required",
-                    message: "This database uses SQLite WAL sidecar files. Select its folder or one of its parent folders to open it.",
-                    dismissAction: .discardPendingAndResumeQueuedOpens
-                )
-            }
+            presentAlert(
+                title: "Couldn’t Open Database",
+                message: error.localizedDescription,
+                dismissAction: queuedDatabaseURLs.isEmpty ? nil : .resumeQueuedOpens
+            )
         }
     }
 
     func handleImporterCancellation() {
-        let currentImporterMode = importerMode
         isPresentingImporter = false
-        importerMode = .databaseFiles
-
-        guard currentImporterMode == .folderForPendingDatabase, pendingDatabaseOpen != nil else {
-            return
-        }
-
-        presentAlert(
-            title: "Folder Access Required",
-            message: "This database uses SQLite WAL sidecar files. Select its folder or one of its parent folders to open it.",
-            dismissAction: .discardPendingAndResumeQueuedOpens
-        )
-    }
-
-    func requiresFolderAuthorization(for databaseURL: URL) -> Bool {
-        companionSidecarURLs(for: databaseURL)
-            .contains { fileManager.fileExists(atPath: $0.path) }
-    }
-
-    func companionSidecarURLs(for databaseURL: URL) -> [URL] {
-        let normalizedURL = normalizedDatabaseURL(databaseURL)
-        return [
-            URL(fileURLWithPath: normalizedURL.path + "-wal"),
-            URL(fileURLWithPath: normalizedURL.path + "-shm")
-        ]
-    }
-
-    func presentPendingFolderPickerIfNeeded() {
-        guard pendingDatabaseOpen != nil else {
-            return
-        }
-
-        importerMode = .folderForPendingDatabase
-        isPresentingImporter = true
     }
 
     func selectDatabase(id: UUID?) async {
@@ -270,9 +187,8 @@ final class AppState {
             return
         }
 
-        let session = sessions.remove(at: index)
+        sessions.remove(at: index)
         await browser.closeDatabase(id: id)
-        releaseAccessScopes(session.activeAccessScopes)
 
         guard selectedDatabaseID == id else {
             return
@@ -291,14 +207,7 @@ final class AppState {
         alert = nil
 
         switch dismissAction {
-        case .presentPendingFolderPicker:
-            presentPendingFolderPickerIfNeeded()
         case .resumeQueuedOpens:
-            Task {
-                await processQueuedDatabaseURLs()
-            }
-        case .discardPendingAndResumeQueuedOpens:
-            discardPendingDatabaseOpen()
             Task {
                 await processQueuedDatabaseURLs()
             }
@@ -308,7 +217,7 @@ final class AppState {
     }
 
     private func processQueuedDatabaseURLs() async {
-        while pendingDatabaseOpen == nil, !queuedDatabaseURLs.isEmpty {
+        while !queuedDatabaseURLs.isEmpty {
             let nextURL = queuedDatabaseURLs.removeFirst()
             await beginDatabaseOpen(at: nextURL)
         }
@@ -322,81 +231,10 @@ final class AppState {
             return
         }
 
-        let fileScope = startAccessScope(for: normalizedURL, kind: .databaseFile)
-        let expectedFolderURL = SecurityScopedBookmarkStore.normalizedDirectoryURL(
-            normalizedURL.deletingLastPathComponent()
-        )
-
-        if requiresFolderAuthorization(for: normalizedURL) {
-            if let folderScope = bookmarkStore.resolveStoredFolderScope(covering: expectedFolderURL) {
-                await openDatabase(
-                    at: normalizedURL,
-                    accessScopes: [fileScope, folderScope],
-                    allowFolderRecovery: false
-                )
-            } else {
-                pendingDatabaseOpen = PendingDatabaseOpen(
-                    databaseURL: normalizedURL,
-                    expectedFolderURL: expectedFolderURL,
-                    fileScope: fileScope
-                )
-                presentPendingFolderPickerIfNeeded()
-            }
-
-            return
-        }
-
-        await openDatabase(
-            at: normalizedURL,
-            accessScopes: [fileScope],
-            allowFolderRecovery: true
-        )
+        await openDatabase(at: normalizedURL)
     }
 
-    private func handleAuthorizedFolderSelection(_ folderURL: URL) async {
-        guard let pendingDatabaseOpen else {
-            return
-        }
-
-        let normalizedFolderURL = SecurityScopedBookmarkStore.normalizedDirectoryURL(folderURL)
-        let folderScope = startAccessScope(for: normalizedFolderURL, kind: .containingFolder)
-
-        guard SecurityScopedBookmarkStore.isSameOrAncestor(normalizedFolderURL, of: pendingDatabaseOpen.expectedFolderURL) else {
-            releaseAccessScopes([folderScope])
-            presentAlert(
-                title: "Wrong Folder Selected",
-                message: "Select \(pendingDatabaseOpen.expectedFolderURL.path) or one of its parent folders to open this database.",
-                dismissAction: .presentPendingFolderPicker
-            )
-            return
-        }
-
-        do {
-            try bookmarkStore.saveReadOnlyBookmark(for: normalizedFolderURL)
-        } catch {
-            releaseAccessScopes([folderScope])
-            presentAlert(
-                title: "Couldn’t Remember Folder Access",
-                message: error.localizedDescription,
-                dismissAction: .discardPendingAndResumeQueuedOpens
-            )
-            return
-        }
-
-        self.pendingDatabaseOpen = nil
-
-        await openDatabase(
-            at: pendingDatabaseOpen.databaseURL,
-            accessScopes: [pendingDatabaseOpen.fileScope, folderScope],
-            allowFolderRecovery: false
-        )
-    }
-
-    private func openDatabase(
-        at databaseURL: URL,
-        accessScopes: [ActiveSecurityScope],
-        allowFolderRecovery: Bool
-    ) async {
+    private func openDatabase(at databaseURL: URL) async {
         do {
             let openedDatabase = try await browser.openDatabase(at: databaseURL)
             let firstTableName = openedDatabase.tables.first?.name
@@ -408,8 +246,7 @@ final class AppState {
                 currentPageIndex: 0,
                 page: nil,
                 isLoadingPage: false,
-                lastErrorMessage: nil,
-                activeAccessScopes: accessScopes
+                lastErrorMessage: nil
             )
 
             sessions.append(session)
@@ -423,33 +260,6 @@ final class AppState {
                 await processQueuedDatabaseURLs()
             }
         } catch {
-            if shouldRecoverWithFolderAuthorization(
-                from: error,
-                databaseURL: databaseURL,
-                accessScopes: accessScopes,
-                allowFolderRecovery: allowFolderRecovery
-            ) {
-                guard let fileScope = accessScopes.first(where: { $0.kind == .databaseFile }) else {
-                    releaseAccessScopes(accessScopes)
-                    presentAlert(
-                        title: "Couldn’t Open Database",
-                        message: error.localizedDescription,
-                        dismissAction: queuedDatabaseURLs.isEmpty ? nil : .resumeQueuedOpens
-                    )
-                    return
-                }
-
-                pendingDatabaseOpen = PendingDatabaseOpen(
-                    databaseURL: databaseURL,
-                    expectedFolderURL: SecurityScopedBookmarkStore.normalizedDirectoryURL(databaseURL.deletingLastPathComponent()),
-                    fileScope: fileScope
-                )
-                releaseAccessScopes(accessScopes.filter { $0.kind != .databaseFile })
-                presentPendingFolderPickerIfNeeded()
-                return
-            }
-
-            releaseAccessScopes(accessScopes)
             presentAlert(
                 title: "Couldn’t Open Database",
                 message: error.localizedDescription,
@@ -517,15 +327,6 @@ final class AppState {
         }
     }
 
-    private func discardPendingDatabaseOpen() {
-        guard let pendingDatabaseOpen else {
-            return
-        }
-
-        self.pendingDatabaseOpen = nil
-        releaseAccessScopes([pendingDatabaseOpen.fileScope])
-    }
-
     private func sessionIndex(for id: UUID) -> Int? {
         sessions.firstIndex(where: { $0.id == id })
     }
@@ -534,45 +335,6 @@ final class AppState {
         url
             .resolvingSymlinksInPath()
             .standardizedFileURL
-    }
-
-    private func startAccessScope(for url: URL, kind: SecurityScopeKind) -> ActiveSecurityScope {
-        let normalizedURL = kind == .containingFolder
-            ? SecurityScopedBookmarkStore.normalizedDirectoryURL(url)
-            : normalizedDatabaseURL(url)
-
-        return ActiveSecurityScope(
-            url: normalizedURL,
-            kind: kind,
-            startedAccess: normalizedURL.startAccessingSecurityScopedResource()
-        )
-    }
-
-    private func releaseAccessScopes(_ accessScopes: [ActiveSecurityScope]) {
-        for accessScope in accessScopes.reversed() where accessScope.startedAccess {
-            accessScope.url.stopAccessingSecurityScopedResource()
-        }
-    }
-
-    private func shouldRecoverWithFolderAuthorization(
-        from error: Error,
-        databaseURL: URL,
-        accessScopes: [ActiveSecurityScope],
-        allowFolderRecovery: Bool
-    ) -> Bool {
-        guard allowFolderRecovery else {
-            return false
-        }
-
-        guard !accessScopes.contains(where: { $0.kind == .containingFolder }) else {
-            return false
-        }
-
-        guard error.localizedDescription.localizedCaseInsensitiveContains("authorization denied") else {
-            return false
-        }
-
-        return companionSidecarURLs(for: databaseURL).count == 2
     }
 
     private func upsert(_ table: DatabaseTable, in tables: inout [DatabaseTable]) {
