@@ -14,8 +14,8 @@ It uses a three-column layout:
 - Read-only SQLite browsing
 - Native SwiftUI `Table` for row display
 - Multiple databases open in one app session
+- Restores previously open databases on relaunch
 - Simple paging for large tables
-- Native file importer for opening databases
 - Native file importer for opening databases
 
 ## Requirements
@@ -33,7 +33,8 @@ It uses a three-column layout:
 
 - TableScope is read-only in v1.
 - It does not execute arbitrary SQL.
-- Session state is not persisted across relaunches.
+- Open databases are restored on relaunch.
+- Selected table and page are not persisted across relaunches.
 
 ## Project Structure
 

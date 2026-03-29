@@ -262,7 +262,7 @@ actor SQLiteBrowser {
                 cells[column.name] = cellValue(statement: statement, column: Int32(columnIndex))
             }
 
-            rows.append(TableRow(id: "\(offset + rows.count)", cells: cells))
+            rows.append(TableRow(id: "\(tableName):\(offset + rows.count)", cells: cells))
         }
 
         return rows

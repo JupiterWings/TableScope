@@ -27,6 +27,11 @@ final class AppState {
         case resumeQueuedOpens
     }
 
+    private enum OpenBehavior: Equatable {
+        case userInitiated
+        case restored
+    }
+
     let pageSize = 100
 
     var sessions: [DatabaseSession] = []
@@ -36,11 +41,17 @@ final class AppState {
     var alert: AppAlert?
 
     private let browser: SQLiteBrowser
+    private let workspaceStore: WorkspacePersistenceStore
     private var alertDismissAction: AlertDismissAction?
     private var queuedDatabaseURLs: [URL] = []
+    private var hasRestoredPersistedSessions = false
 
-    init(browser: SQLiteBrowser = SQLiteBrowser()) {
+    init(
+        browser: SQLiteBrowser = SQLiteBrowser(),
+        workspaceStore: WorkspacePersistenceStore = WorkspacePersistenceStore()
+    ) {
         self.browser = browser
+        self.workspaceStore = workspaceStore
     }
 
     var selectedSession: DatabaseSession? {
@@ -85,6 +96,44 @@ final class AppState {
     func presentOpenPanel() {
         importerMode = .databaseFiles
         isPresentingImporter = true
+    }
+
+    func restorePersistedSessionsIfNeeded() async {
+        guard !hasRestoredPersistedSessions else {
+            return
+        }
+
+        hasRestoredPersistedSessions = true
+
+        guard ProcessInfo.processInfo.environment["XCODE_RUNNING_FOR_PREVIEWS"] != "1" else {
+            return
+        }
+
+        guard let persistedState = workspaceStore.load() else {
+            return
+        }
+
+        var firstRestoredSessionID: UUID?
+
+        for databasePath in persistedState.databasePaths {
+            let databaseURL = URL(fileURLWithPath: databasePath, isDirectory: false)
+            guard FileManager.default.fileExists(atPath: databaseURL.path) else {
+                continue
+            }
+
+            if let restoredSessionID = await beginDatabaseOpen(at: databaseURL, behavior: .restored),
+               firstRestoredSessionID == nil {
+                firstRestoredSessionID = restoredSessionID
+            }
+        }
+
+        persistWorkspace()
+
+        guard let firstRestoredSessionID else {
+            return
+        }
+
+        await selectDatabase(id: firstRestoredSessionID)
     }
 
     func handleImporterResult(result: Result<[URL], Error>) async {
@@ -188,6 +237,7 @@ final class AppState {
         }
 
         sessions.remove(at: index)
+        persistWorkspace()
         await browser.closeDatabase(id: id)
 
         guard selectedDatabaseID == id else {
@@ -219,25 +269,30 @@ final class AppState {
     private func processQueuedDatabaseURLs() async {
         while !queuedDatabaseURLs.isEmpty {
             let nextURL = queuedDatabaseURLs.removeFirst()
-            await beginDatabaseOpen(at: nextURL)
+            await beginDatabaseOpen(at: nextURL, behavior: .userInitiated)
         }
     }
 
-    private func beginDatabaseOpen(at url: URL) async {
+    @discardableResult
+    private func beginDatabaseOpen(at url: URL, behavior: OpenBehavior) async -> UUID? {
         let normalizedURL = normalizedDatabaseURL(url)
 
         if let existingSession = sessions.first(where: { $0.url.standardizedFileURL == normalizedURL }) {
-            await selectDatabase(id: existingSession.id)
-            return
+            if behavior == .userInitiated {
+                await selectDatabase(id: existingSession.id)
+            }
+
+            return existingSession.id
         }
 
-        await openDatabase(at: normalizedURL)
+        return await openDatabase(at: normalizedURL, behavior: behavior)
     }
 
-    private func openDatabase(at databaseURL: URL) async {
+    @discardableResult
+    private func openDatabase(at databaseURL: URL, behavior: OpenBehavior) async -> UUID? {
         do {
             let openedDatabase = try await browser.openDatabase(at: databaseURL)
-            let firstTableName = openedDatabase.tables.first?.name
+            let firstTableName = behavior == .userInitiated ? openedDatabase.tables.first?.name : nil
             let session = DatabaseSession(
                 id: openedDatabase.id,
                 url: databaseURL,
@@ -250,21 +305,31 @@ final class AppState {
             )
 
             sessions.append(session)
-            selectedDatabaseID = session.id
+            persistWorkspace()
 
-            if firstTableName != nil {
+            if behavior == .userInitiated {
+                selectedDatabaseID = session.id
+            }
+
+            if behavior == .userInitiated, firstTableName != nil {
                 await loadSelectedPage(for: session.id, forceRefresh: false)
             }
 
-            if alert == nil {
+            if behavior == .userInitiated, alert == nil {
                 await processQueuedDatabaseURLs()
             }
+
+            return session.id
         } catch {
-            presentAlert(
-                title: "Couldn’t Open Database",
-                message: error.localizedDescription,
-                dismissAction: queuedDatabaseURLs.isEmpty ? nil : .resumeQueuedOpens
-            )
+            if behavior == .userInitiated {
+                presentAlert(
+                    title: "Couldn’t Open Database",
+                    message: error.localizedDescription,
+                    dismissAction: queuedDatabaseURLs.isEmpty ? nil : .resumeQueuedOpens
+                )
+            }
+
+            return nil
         }
     }
 
@@ -353,5 +418,14 @@ final class AppState {
     ) {
         alertDismissAction = dismissAction
         alert = AppAlert(title: title, message: message)
+    }
+
+    private func persistWorkspace() {
+        guard !sessions.isEmpty else {
+            workspaceStore.clear()
+            return
+        }
+
+        workspaceStore.save(databaseURLs: sessions.map(\.url))
     }
 }

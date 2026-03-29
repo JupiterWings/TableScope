@@ -50,6 +50,7 @@ struct TableDetailView: View {
                     onPreviousPage: onPreviousPage,
                     onNextPage: onNextPage
                 )
+                .id(tableViewIdentity(sessionID: session.id, table: selectedTable))
             } else {
                 ContentUnavailableView(
                     "Select a Table",
@@ -64,5 +65,10 @@ struct TableDetailView: View {
                 description: Text("Choose a database from the sidebar.")
             )
         }
+    }
+
+    private func tableViewIdentity(sessionID: UUID, table: DatabaseTable) -> String {
+        let columnNames = table.columns.map(\.name).joined(separator: "|")
+        return "\(sessionID.uuidString):\(table.name):\(columnNames)"
     }
 }

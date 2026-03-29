@@ -44,6 +44,9 @@ struct ContentView: View {
                 appState.presentOpenPanel()
             }
         )
+        .task {
+            await appState.restorePersistedSessionsIfNeeded()
+        }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
