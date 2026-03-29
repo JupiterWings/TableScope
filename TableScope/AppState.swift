@@ -48,10 +48,10 @@ final class AppState {
 
     init(
         browser: SQLiteBrowser = SQLiteBrowser(),
-        workspaceStore: WorkspacePersistenceStore = WorkspacePersistenceStore()
+        workspaceStore: WorkspacePersistenceStore? = nil
     ) {
         self.browser = browser
-        self.workspaceStore = workspaceStore
+        self.workspaceStore = workspaceStore ?? WorkspacePersistenceStore()
     }
 
     var selectedSession: DatabaseSession? {
