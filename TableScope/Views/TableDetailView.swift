@@ -12,7 +12,6 @@ struct TableDetailView: View {
     let selectedTable: DatabaseTable?
     let canGoToPreviousPage: Bool
     let canGoToNextPage: Bool
-    let onOpen: () -> Void
     let onPreviousPage: () -> Void
     let onNextPage: () -> Void
 
@@ -22,8 +21,6 @@ struct TableDetailView: View {
                 Label("No Database Selected", systemImage: "internaldrive")
             } description: {
                 Text("Open a database to inspect its tables and rows.")
-            } actions: {
-                Button("Open Database…", action: onOpen)
             }
         } else if let session = selectedSession {
             if session.tables.isEmpty {

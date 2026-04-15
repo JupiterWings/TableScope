@@ -8,7 +8,7 @@ import Foundation
 
 nonisolated struct DatabaseSession: Identifiable, Hashable, Sendable {
     let id: UUID
-    let url: URL
+    let source: DatabaseSource
     var tables: [DatabaseTable]
     var selectedTableName: String?
     var currentPageIndex: Int
@@ -17,16 +17,19 @@ nonisolated struct DatabaseSession: Identifiable, Hashable, Sendable {
     var lastErrorMessage: String?
 
     nonisolated var displayName: String {
-        url.lastPathComponent
+        source.displayName
     }
 
     nonisolated var parentPath: String {
-        let path = url.deletingLastPathComponent().path
-        return path.isEmpty ? "/" : path
+        source.parentPath
+    }
+
+    nonisolated var isRemote: Bool {
+        source.isRemote
     }
 }
 
-nonisolated struct DatabaseTable: Identifiable, Hashable, Sendable {
+nonisolated struct DatabaseTable: Identifiable, Hashable, Sendable, Codable {
     let name: String
     var columns: [TableColumnInfo]
     var rowCount: Int
@@ -36,7 +39,7 @@ nonisolated struct DatabaseTable: Identifiable, Hashable, Sendable {
     }
 }
 
-nonisolated struct TableColumnInfo: Identifiable, Hashable, Sendable {
+nonisolated struct TableColumnInfo: Identifiable, Hashable, Sendable, Codable {
     let name: String
     let declaredType: String
     let primaryKeyIndex: Int?
@@ -51,12 +54,26 @@ nonisolated struct TableColumnInfo: Identifiable, Hashable, Sendable {
     }
 }
 
-nonisolated enum CellDisplayValue: Hashable, Sendable {
+nonisolated enum CellDisplayValue: Hashable, Sendable, Codable {
     case null
     case integer(Int64)
     case real(Double)
     case text(String)
     case blob(Int)
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case value
+        case byteCount
+    }
+
+    private enum Kind: String, Codable {
+        case null
+        case integer
+        case real
+        case text
+        case blob
+    }
 
     nonisolated var displayText: String {
         switch self {
@@ -72,9 +89,48 @@ nonisolated enum CellDisplayValue: Hashable, Sendable {
             return "BLOB (\(byteCount) bytes)"
         }
     }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let kind = try container.decode(Kind.self, forKey: .kind)
+
+        switch kind {
+        case .null:
+            self = .null
+        case .integer:
+            self = .integer(try container.decode(Int64.self, forKey: .value))
+        case .real:
+            self = .real(try container.decode(Double.self, forKey: .value))
+        case .text:
+            self = .text(try container.decode(String.self, forKey: .value))
+        case .blob:
+            self = .blob(try container.decode(Int.self, forKey: .byteCount))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+
+        switch self {
+        case .null:
+            try container.encode(Kind.null, forKey: .kind)
+        case .integer(let value):
+            try container.encode(Kind.integer, forKey: .kind)
+            try container.encode(value, forKey: .value)
+        case .real(let value):
+            try container.encode(Kind.real, forKey: .kind)
+            try container.encode(value, forKey: .value)
+        case .text(let value):
+            try container.encode(Kind.text, forKey: .kind)
+            try container.encode(value, forKey: .value)
+        case .blob(let byteCount):
+            try container.encode(Kind.blob, forKey: .kind)
+            try container.encode(byteCount, forKey: .byteCount)
+        }
+    }
 }
 
-nonisolated struct TableRow: Identifiable, Hashable, Sendable {
+nonisolated struct TableRow: Identifiable, Hashable, Sendable, Codable {
     let id: String
     let cells: [String: CellDisplayValue]
 
@@ -83,7 +139,7 @@ nonisolated struct TableRow: Identifiable, Hashable, Sendable {
     }
 }
 
-nonisolated struct TablePage: Hashable, Sendable {
+nonisolated struct TablePage: Hashable, Sendable, Codable {
     let tableName: String
     let rows: [TableRow]
     let rowCount: Int

@@ -37,17 +37,19 @@ final class AppState {
     var sessions: [DatabaseSession] = []
     var selectedDatabaseID: UUID?
     var isPresentingImporter = false
+    var isPresentingRemoteDatabaseSheet = false
     var importerMode: ImporterMode = .databaseFiles
+    var remoteDatabaseDraft = RemoteDatabaseDraft()
     var alert: AppAlert?
 
-    private let browser: SQLiteBrowser
+    private let browser: DatabaseBrowser
     private let workspaceStore: WorkspacePersistenceStore
     private var alertDismissAction: AlertDismissAction?
-    private var queuedDatabaseURLs: [URL] = []
+    private var queuedDatabaseSources: [DatabaseSource] = []
     private var hasRestoredPersistedSessions = false
 
     init(
-        browser: SQLiteBrowser = SQLiteBrowser(),
+        browser: DatabaseBrowser = DatabaseBrowser(),
         workspaceStore: WorkspacePersistenceStore? = nil
     ) {
         self.browser = browser
@@ -98,6 +100,49 @@ final class AppState {
         isPresentingImporter = true
     }
 
+    func presentRemoteDatabaseSheet() {
+        if remoteDatabaseDraft.hostAlias.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            remoteDatabaseDraft.hostAlias = RemoteHelperConfiguration.defaultHostAlias
+        }
+
+        remoteDatabaseDraft.databasePath = ""
+        isPresentingRemoteDatabaseSheet = true
+    }
+
+    func confirmRemoteDatabaseDraft() async {
+        let hostAlias = remoteDatabaseDraft.hostAlias.trimmingCharacters(in: .whitespacesAndNewlines)
+        let databasePath = remoteDatabaseDraft.databasePath.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !hostAlias.isEmpty, !databasePath.isEmpty else {
+            presentAlert(
+                title: "Couldn’t Open Remote Database",
+                message: "Provide both an SSH host alias and a remote database path."
+            )
+            return
+        }
+
+        isPresentingRemoteDatabaseSheet = false
+        remoteDatabaseDraft.hostAlias = hostAlias
+        remoteDatabaseDraft.databasePath = ""
+        await openRemoteDatabase(hostAlias: hostAlias, databasePath: databasePath)
+    }
+
+    func cancelRemoteDatabaseSheet() {
+        isPresentingRemoteDatabaseSheet = false
+    }
+
+    func openRemoteDatabase(hostAlias: String, databasePath: String) async {
+        queuedDatabaseSources.append(
+            .remoteSQLite(
+                RemoteDatabaseSource(
+                    hostAlias: hostAlias,
+                    databasePath: databasePath
+                )
+            )
+        )
+        await processQueuedDatabaseSources()
+    }
+
     func restorePersistedSessionsIfNeeded() async {
         guard !hasRestoredPersistedSessions else {
             return
@@ -115,14 +160,20 @@ final class AppState {
 
         var firstRestoredSessionID: UUID?
 
-        for databasePath in persistedState.databasePaths {
-            let databaseURL = URL(fileURLWithPath: databasePath, isDirectory: false)
-            guard FileManager.default.fileExists(atPath: databaseURL.path) else {
+        for persistedSource in persistedState.databaseSources {
+            guard let databaseSource = persistedSource.databaseSource else {
                 continue
             }
 
-            if let restoredSessionID = await beginDatabaseOpen(at: databaseURL, behavior: .restored),
-               firstRestoredSessionID == nil {
+            if let localFileURL = databaseSource.localFileURL,
+               !FileManager.default.fileExists(atPath: localFileURL.path) {
+                continue
+            }
+
+            if let restoredSessionID = await beginDatabaseOpen(
+                source: databaseSource,
+                behavior: .restored
+            ), firstRestoredSessionID == nil {
                 firstRestoredSessionID = restoredSessionID
             }
         }
@@ -140,13 +191,17 @@ final class AppState {
         isPresentingImporter = false
 
         do {
-            queuedDatabaseURLs.append(contentsOf: try result.get())
-            await processQueuedDatabaseURLs()
+            queuedDatabaseSources.append(
+                contentsOf: try result.get().map {
+                    .localFile(LocalFileDatabaseSource(url: $0))
+                }
+            )
+            await processQueuedDatabaseSources()
         } catch {
             presentAlert(
                 title: "Couldn’t Open Database",
                 message: error.localizedDescription,
-                dismissAction: queuedDatabaseURLs.isEmpty ? nil : .resumeQueuedOpens
+                dismissAction: queuedDatabaseSources.isEmpty ? nil : .resumeQueuedOpens
             )
         }
     }
@@ -259,25 +314,25 @@ final class AppState {
         switch dismissAction {
         case .resumeQueuedOpens:
             Task {
-                await processQueuedDatabaseURLs()
+                await processQueuedDatabaseSources()
             }
         case nil:
             break
         }
     }
 
-    private func processQueuedDatabaseURLs() async {
-        while !queuedDatabaseURLs.isEmpty {
-            let nextURL = queuedDatabaseURLs.removeFirst()
-            await beginDatabaseOpen(at: nextURL, behavior: .userInitiated)
+    private func processQueuedDatabaseSources() async {
+        while !queuedDatabaseSources.isEmpty {
+            let nextSource = queuedDatabaseSources.removeFirst()
+            await beginDatabaseOpen(source: nextSource, behavior: .userInitiated)
         }
     }
 
     @discardableResult
-    private func beginDatabaseOpen(at url: URL, behavior: OpenBehavior) async -> UUID? {
-        let normalizedURL = normalizedDatabaseURL(url)
+    private func beginDatabaseOpen(source: DatabaseSource, behavior: OpenBehavior) async -> UUID? {
+        let normalizedSource = normalizedDatabaseSource(source)
 
-        if let existingSession = sessions.first(where: { $0.url.standardizedFileURL == normalizedURL }) {
+        if let existingSession = sessions.first(where: { $0.source == normalizedSource }) {
             if behavior == .userInitiated {
                 await selectDatabase(id: existingSession.id)
             }
@@ -285,17 +340,17 @@ final class AppState {
             return existingSession.id
         }
 
-        return await openDatabase(at: normalizedURL, behavior: behavior)
+        return await openDatabase(source: normalizedSource, behavior: behavior)
     }
 
     @discardableResult
-    private func openDatabase(at databaseURL: URL, behavior: OpenBehavior) async -> UUID? {
+    private func openDatabase(source: DatabaseSource, behavior: OpenBehavior) async -> UUID? {
         do {
-            let openedDatabase = try await browser.openDatabase(at: databaseURL)
+            let openedDatabase = try await browser.openDatabase(source: source)
             let firstTableName = behavior == .userInitiated ? openedDatabase.tables.first?.name : nil
             let session = DatabaseSession(
                 id: openedDatabase.id,
-                url: databaseURL,
+                source: source,
                 tables: openedDatabase.tables,
                 selectedTableName: firstTableName,
                 currentPageIndex: 0,
@@ -316,16 +371,16 @@ final class AppState {
             }
 
             if behavior == .userInitiated, alert == nil {
-                await processQueuedDatabaseURLs()
+                await processQueuedDatabaseSources()
             }
 
             return session.id
         } catch {
             if behavior == .userInitiated {
                 presentAlert(
-                    title: "Couldn’t Open Database",
+                    title: source.isRemote ? "Couldn’t Open Remote Database" : "Couldn’t Open Database",
                     message: error.localizedDescription,
-                    dismissAction: queuedDatabaseURLs.isEmpty ? nil : .resumeQueuedOpens
+                    dismissAction: queuedDatabaseSources.isEmpty ? nil : .resumeQueuedOpens
                 )
             }
 
@@ -352,7 +407,7 @@ final class AppState {
         sessions[index].lastErrorMessage = nil
 
         do {
-            let loadedData: SQLiteBrowser.LoadedTableData
+            let loadedData: DatabaseBrowser.LoadedTableData
             if forceRefresh {
                 loadedData = try await browser.refreshPage(
                     for: databaseID,
@@ -387,7 +442,7 @@ final class AppState {
             presentAlert(
                 title: "Couldn’t Load Table",
                 message: error.localizedDescription,
-                dismissAction: queuedDatabaseURLs.isEmpty ? nil : .resumeQueuedOpens
+                dismissAction: queuedDatabaseSources.isEmpty ? nil : .resumeQueuedOpens
             )
         }
     }
@@ -396,10 +451,8 @@ final class AppState {
         sessions.firstIndex(where: { $0.id == id })
     }
 
-    private func normalizedDatabaseURL(_ url: URL) -> URL {
-        url
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
+    private func normalizedDatabaseSource(_ source: DatabaseSource) -> DatabaseSource {
+        source.normalized
     }
 
     private func upsert(_ table: DatabaseTable, in tables: inout [DatabaseTable]) {
@@ -426,6 +479,6 @@ final class AppState {
             return
         }
 
-        workspaceStore.save(databaseURLs: sessions.map(\.url))
+        workspaceStore.save(databaseSources: sessions.map(\.source))
     }
 }

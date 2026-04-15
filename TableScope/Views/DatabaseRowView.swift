@@ -11,7 +11,7 @@ struct DatabaseRowView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "externaldrive.fill")
+            Image(systemName: session.isRemote ? "network" : "externaldrive.fill")
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(session.displayName)

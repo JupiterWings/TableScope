@@ -14,8 +14,7 @@ struct ContentView: View {
             DatabaseSidebarView(
                 sessions: appState.sessions,
                 selectedDatabaseID: databaseSelection,
-                onClose: closeDatabase,
-                onOpen: appState.presentOpenPanel
+                onClose: closeDatabase
             )
             .navigationSplitViewColumnWidth(min: 240, ideal: 280)
         } content: {
@@ -32,7 +31,6 @@ struct ContentView: View {
                 selectedTable: appState.selectedTable,
                 canGoToPreviousPage: appState.canGoToPreviousPage,
                 canGoToNextPage: appState.canGoToNextPage,
-                onOpen: appState.presentOpenPanel,
                 onPreviousPage: loadPreviousPage,
                 onNextPage: loadNextPage
             )
@@ -44,15 +42,27 @@ struct ContentView: View {
                 appState.presentOpenPanel()
             }
         )
+        .focusedSceneValue(
+            \.openRemoteDatabaseCommandAction,
+            OpenRemoteDatabaseCommandAction {
+                appState.presentRemoteDatabaseSheet()
+            }
+        )
         .task {
             await appState.restorePersistedSessionsIfNeeded()
         }
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     appState.presentOpenPanel()
                 } label: {
                     Label("Open Database…", systemImage: "externaldrive.fill.badge.plus")
+                }
+
+                Button {
+                    appState.presentRemoteDatabaseSheet()
+                } label: {
+                    Label("Open Remote Database…", systemImage: "network")
                 }
             }
 
@@ -78,6 +88,29 @@ struct ContentView: View {
             }
         } onCancellation: {
             appState.handleImporterCancellation()
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { appState.isPresentingRemoteDatabaseSheet },
+                set: { appState.isPresentingRemoteDatabaseSheet = $0 }
+            )
+        ) {
+            RemoteDatabaseSheet(
+                hostAlias: Binding(
+                    get: { appState.remoteDatabaseDraft.hostAlias },
+                    set: { appState.remoteDatabaseDraft.hostAlias = $0 }
+                ),
+                databasePath: Binding(
+                    get: { appState.remoteDatabaseDraft.databasePath },
+                    set: { appState.remoteDatabaseDraft.databasePath = $0 }
+                ),
+                onCancel: appState.cancelRemoteDatabaseSheet,
+                onOpen: {
+                    Task {
+                        await appState.confirmRemoteDatabaseDraft()
+                    }
+                }
+            )
         }
         .alert(
             item: Binding(
